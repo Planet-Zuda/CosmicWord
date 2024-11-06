@@ -1,0 +1,212 @@
+﻿<?php
+// wp-includes/cosmic/cosmic-seo.php
+
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+if (defined('COSMIC_SEO_LOADED')) {
+    return;
+}
+define('COSMIC_SEO_LOADED', true);
+
+class Cosmic_SEO {
+    private static $instance = null;
+    private $meta_fields = array(
+        'seo_title' => 'text',
+        'seo_description' => 'textarea',
+        'seo_keywords' => 'text',
+        'og_title' => 'text',
+        'og_description' => 'textarea',
+        'og_image' => 'text',
+        'twitter_title' => 'text',
+        'twitter_description' => 'textarea',
+        'twitter_image' => 'text'
+    );
+
+    public static function get_instance() {
+        if (null === self::$instance) {
+            self::$instance = new self();
+        }
+        return self::$instance;
+    }
+
+    private function __construct() {
+        // Admin columns
+        add_filter('manage_posts_columns', array($this, 'add_seo_columns'));
+        add_filter('manage_pages_columns', array($this, 'add_seo_columns'));
+        add_action('manage_posts_custom_column', array($this, 'render_seo_column'), 10, 2);
+        add_action('manage_pages_custom_column', array($this, 'render_seo_column'), 10, 2);
+
+        // Meta box
+        add_action('add_meta_boxes', array($this, 'add_meta_box'));
+        add_action('save_post', array($this, 'save_meta'), 20); // Lower priority to avoid conflicts
+
+        // Frontend output
+        add_action('wp_head', array($this, 'output_meta'), 1);
+        
+        // Styles
+        add_action('admin_head', array($this, 'add_styles'));
+    }
+
+    public function add_seo_columns($columns) {
+        $new_columns = array();
+        foreach ($columns as $key => $value) {
+            $new_columns[$key] = $value;
+            if ($key === 'title') {
+                $new_columns['seo_title'] = __('SEO Title');
+                $new_columns['seo_description'] = __('SEO Description');
+            }
+        }
+        return $new_columns;
+    }
+
+    public function render_seo_column($column, $post_id) {
+        if (in_array($column, ['seo_title', 'seo_description'])) {
+            $value = get_post_meta($post_id, '_' . $column, true);
+            echo esc_html($value ?: '-');
+        }
+    }
+
+    public function add_meta_box() {
+        add_meta_box(
+            'cosmic_seo',
+            __('SEO Settings'),
+            array($this, 'render_meta_box'),
+            ['post', 'page'],
+            'normal',
+            'high'
+        );
+    }
+
+    public function render_meta_box($post) {
+        wp_nonce_field('cosmic_seo_nonce_action', 'cosmic_seo_nonce');
+        
+        echo '<div class="cosmic-seo-wrapper">';
+        
+        foreach ($this->meta_fields as $field => $type) {
+            $value = get_post_meta($post->ID, '_' . $field, true);
+            $label = ucwords(str_replace('_', ' ', $field));
+            
+            echo '<p>';
+            echo '<label for="' . esc_attr($field) . '">' . esc_html__($label) . '</label><br>';
+            
+            if ($type === 'textarea') {
+                echo '<textarea id="' . esc_attr($field) . '" name="' . esc_attr($field) . '" rows="3" style="width: 100%">' . 
+                     esc_textarea($value) . '</textarea>';
+            } else {
+                echo '<input type="text" id="' . esc_attr($field) . '" name="' . esc_attr($field) . '" value="' . 
+                     esc_attr($value) . '" style="width: 100%">';
+            }
+            
+            echo '</p>';
+        }
+        
+        echo '</div>';
+    }
+
+    public function save_meta($post_id) {
+        // Basic checks
+        if (wp_is_post_revision($post_id)) return;
+        if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) return;
+        if (!current_user_can('edit_post', $post_id)) return;
+        
+        // Verify nonce
+        if (!isset($_POST['cosmic_seo_nonce']) || 
+            !wp_verify_nonce($_POST['cosmic_seo_nonce'], 'cosmic_seo_nonce_action')) {
+            return;
+        }
+
+        // Save fields
+        foreach ($this->meta_fields as $field => $type) {
+            if (isset($_POST[$field])) {
+                $value = $type === 'textarea' ? 
+                    sanitize_textarea_field($_POST[$field]) : 
+                    sanitize_text_field($_POST[$field]);
+                    
+                if (empty($value)) {
+                    delete_post_meta($post_id, '_' . $field);
+                } else {
+                    update_post_meta($post_id, '_' . $field, $value);
+                }
+            }
+        }
+    }
+
+    public function output_meta() {
+        if (!is_singular(['post', 'page'])) return;
+        
+        global $post;
+        $meta_output = array();
+
+        // Basic SEO meta
+        $seo_title = get_post_meta($post->ID, '_seo_title', true);
+        if ($seo_title) {
+            $meta_output[] = sprintf('<title>%s</title>', esc_html($seo_title));
+        }
+
+        $seo_description = get_post_meta($post->ID, '_seo_description', true);
+        if ($seo_description) {
+            $meta_output[] = sprintf('<meta name="description" content="%s">', esc_attr($seo_description));
+        }
+
+        $seo_keywords = get_post_meta($post->ID, '_seo_keywords', true);
+        if ($seo_keywords) {
+            $meta_output[] = sprintf('<meta name="keywords" content="%s">', esc_attr($seo_keywords));
+        }
+
+        // Open Graph meta
+        $og_title = get_post_meta($post->ID, '_og_title', true) ?: $seo_title;
+        $og_description = get_post_meta($post->ID, '_og_description', true) ?: $seo_description;
+        $og_image = get_post_meta($post->ID, '_og_image', true);
+
+        if ($og_title || $og_description || $og_image) {
+            $meta_output[] = '<meta property="og:type" content="article">';
+            $meta_output[] = sprintf('<meta property="og:title" content="%s">', esc_attr($og_title));
+            $meta_output[] = sprintf('<meta property="og:description" content="%s">', esc_attr($og_description));
+            $meta_output[] = sprintf('<meta property="og:url" content="%s">', esc_url(get_permalink($post)));
+            if ($og_image) {
+                $meta_output[] = sprintf('<meta property="og:image" content="%s">', esc_url($og_image));
+            }
+        }
+
+        // Twitter Card meta
+        $twitter_title = get_post_meta($post->ID, '_twitter_title', true) ?: $og_title;
+        $twitter_description = get_post_meta($post->ID, '_twitter_description', true) ?: $og_description;
+        $twitter_image = get_post_meta($post->ID, '_twitter_image', true) ?: $og_image;
+
+        if ($twitter_title || $twitter_description || $twitter_image) {
+            $meta_output[] = '<meta name="twitter:card" content="summary_large_image">';
+            $meta_output[] = sprintf('<meta name="twitter:title" content="%s">', esc_attr($twitter_title));
+            $meta_output[] = sprintf('<meta name="twitter:description" content="%s">', esc_attr($twitter_description));
+            if ($twitter_image) {
+                $meta_output[] = sprintf('<meta name="twitter:image" content="%s">', esc_url($twitter_image));
+            }
+        }
+
+        echo implode("\n", $meta_output) . "\n";
+    }
+
+    public function add_styles() {
+        ?>
+        <style type="text/css">
+            .cosmic-seo-wrapper {
+                padding: 10px;
+            }
+            .cosmic-seo-wrapper label {
+                font-weight: 600;
+                margin-bottom: 5px;
+                display: inline-block;
+            }
+            .cosmic-seo-wrapper input[type="text"],
+            .cosmic-seo-wrapper textarea {
+                margin: 5px 0 15px;
+            }
+        </style>
+        <?php
+    }
+}
+
+// Initialize the SEO class
+add_action('init', array('Cosmic_SEO', 'get_instance'));
+?>
