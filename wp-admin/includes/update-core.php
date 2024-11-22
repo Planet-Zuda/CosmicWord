@@ -746,8 +746,6 @@ $_old_files = array(
 	'wp-includes/blocks/post-comments',
 	'wp-includes/blocks/comments-query-loop',
 	// 6.3
-	'wp-includes/images/wlw',
-	'wp-includes/wlwmanifest.xml',
 	'wp-includes/random_compat',
 	// 6.4
 	'wp-includes/navigation-fallback.php',

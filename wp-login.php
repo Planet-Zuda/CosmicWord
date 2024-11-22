@@ -91,10 +91,22 @@ function login_header( $title = null, $message = '', $wp_error = null ) {
 	$login_title = apply_filters( 'login_title', $login_title, $title );
 
 	?><!DOCTYPE html>
-	<html <?php language_attributes(); ?>>
-	<head>
-	<meta http-equiv="Content-Type" content="<?php bloginfo( 'html_type' ); ?>; charset=<?php bloginfo( 'charset' ); ?>" />
-	<title><?php echo $login_title; ?></title>
+    <html <?php language_attributes(); ?>>
+    <head>
+    <meta http-equiv="Content-Type" content="<?php bloginfo( 'html_type' ); ?>; charset=<?php bloginfo( 'charset' ); ?>" />
+    <title><?php echo $login_title; ?></title>
+    
+    <?php
+    wp_enqueue_style( 'login' );
+
+    // helps comply with laws 
+    ?>
+    <script>
+document.addEventListener('DOMContentLoaded', function() {
+    alert("Friendly reminder: Like most sites, we log IP addresses for security and to help us understand usage patterns. If you’re uncomfortable with this, feel free to check this specific sites privacy policy."); 
+});
+</script>   
+
 	<?php
 
 	wp_enqueue_style( 'login' );
@@ -210,10 +222,9 @@ function login_header( $title = null, $message = '', $wp_error = null ) {
 	 * @since 4.6.0
 	 */
 	do_action( 'login_header' );
-
 	?>
 	<div id="login">
-		<h1><a href="<?php echo esc_url( $login_header_url ); ?>"><?php echo $login_header_text; ?></a></h1>
+		<h1 role="presentation" class="wp-login-logo"><a href="<?php echo esc_url( $login_header_url ); ?>"><?php echo $login_header_text; ?></a></h1>
 	<?php
 	/**
 	 * Filters the message to display above the login form.
@@ -462,7 +473,8 @@ function wp_shake_js() {
  */
 function wp_login_viewport_meta() {
 	?>
-	<meta name="viewport" content="width=device-width" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
 	<?php
 }
 
@@ -505,32 +517,299 @@ if ( ! in_array( $action, $default_actions, true ) && false === has_filter( 'log
 
 nocache_headers();
 
-header( 'Content-Type: ' . get_bloginfo( 'html_type' ) . '; charset=' . get_bloginfo( 'charset' ) );
+// Define allowed content types and charsets
+$allowed_types = ['text/html', 'application/xhtml+xml'];
+$allowed_charsets = ['UTF-8', 'ISO-8859-1'];
 
-if ( defined( 'RELOCATE' ) && RELOCATE ) { // Move flag is set.
-	if ( isset( $_SERVER['PATH_INFO'] ) && ( $_SERVER['PATH_INFO'] !== $_SERVER['PHP_SELF'] ) ) {
-		$_SERVER['PHP_SELF'] = str_replace( $_SERVER['PATH_INFO'], '', $_SERVER['PHP_SELF'] );
-	}
+// Security constants
+define('LANG_TIME_WINDOW', 300); // 5 minute window
+define('LANG_LOG_ATTEMPTS', 10); // Log after 10 attempts
+define('LANG_EXTREME_RATE', 10); // More than 10/sec is automated 
+define('LANG_GAMING_RATE', 9);  // Trying to game the system
+define('LANG_ADAPTIVE_ATTEMPTS', 3); // Number of rate adjustments before flagging
 
-	$url = dirname( set_url_scheme( 'http://' . $_SERVER['HTTP_HOST'] . $_SERVER['PHP_SELF'] ) );
+// Validate and set content type header with strict charset checking
+$html_type = get_bloginfo('html_type');
+$charset = get_bloginfo('charset');
 
-	if ( get_option( 'siteurl' ) !== $url ) {
-		update_option( 'siteurl', $url );
-	}
+if (!in_array($html_type, $allowed_types, true) || 
+    !preg_match('/^(' . implode('|', array_map('preg_quote', $allowed_charsets)) . ')$/i', $charset)) {
+    error_log("WordPress Login: Invalid content type or charset");
+    wp_die('Invalid request', 'Error', ['response' => 400]);
 }
 
-// Set a cookie now to see if they are supported by the browser.
-$secure = ( 'https' === parse_url( wp_login_url(), PHP_URL_SCHEME ) );
-setcookie( TEST_COOKIE, 'WP Cookie check', 0, COOKIEPATH, COOKIE_DOMAIN, $secure );
+header('Content-Type: ' . $html_type . '; charset=' . $charset);
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: SAMEORIGIN');
 
-if ( SITECOOKIEPATH !== COOKIEPATH ) {
-	setcookie( TEST_COOKIE, 'WP Cookie check', 0, SITECOOKIEPATH, COOKIE_DOMAIN, $secure );
+if (defined('RELOCATE') && RELOCATE) {
+    // Validate essential server parameters
+    if (!isset($_SERVER['HTTP_HOST']) || !isset($_SERVER['PHP_SELF'])) {
+        error_log("WordPress Login: Missing server parameters in RELOCATE");
+        wp_die('Invalid request', 'Error', ['response' => 400]);
+    }
+    
+    // Strict hostname validation
+    $host = $_SERVER['HTTP_HOST'];
+    if (!preg_match('/^[a-zA-Z0-9-\.]+\.[a-zA-Z]{2,}$/', $host) || 
+        !filter_var($host, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME)) {
+        error_log("WordPress Login: Invalid hostname detected");
+        wp_die('Invalid request', 'Error', ['response' => 400]);
+    }
+    
+    // Secure PATH_INFO and PHP_SELF handling
+    $php_self = $_SERVER['PHP_SELF'];
+    if (isset($_SERVER['PATH_INFO'])) {
+        $path_info = $_SERVER['PATH_INFO'];
+        if (strpos($path_info, "\0") !== false || !preg_match('/^[\x20-\x7E]*$/', $path_info)) {
+            error_log("CosmicWord Login: Invalid PATH_INFO detected");
+            wp_die('Invalid request', 'Error', ['response' => 400]);
+        }
+        if ($path_info !== $php_self) {
+            $php_self = str_replace($path_info, '', $php_self);
+        }
+    }
+    
+    // Enhanced path sanitization
+    $php_self = filter_var($php_self, FILTER_SANITIZE_URL);
+    $php_self = str_replace(['\\', '../', './'], '/', $php_self);
+    $php_self = preg_replace('/\/+/', '/', $php_self);
+    
+    // Comprehensive SSL detection
+    $is_ssl = (
+        (!empty($_SERVER['HTTPS']) && strtolower($_SERVER['HTTPS']) !== 'off') ||
+        (isset($_SERVER['SERVER_PORT']) && $_SERVER['SERVER_PORT'] === '443') ||
+        (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower(sanitize_text_field($_SERVER['HTTP_X_FORWARDED_PROTO'])) === 'https')
+    );
+    
+    $scheme = $is_ssl ? 'https://' : 'http://';
+    
+    // URL construction and validation
+    $url = rtrim(dirname($scheme . $host . $php_self), '/.');
+    
+    if (strlen($url) > 2048 || filter_var($url, FILTER_VALIDATE_URL) === false) {
+        error_log("CosmicWord Login: Invalid URL structure");
+        wp_die('Invalid request', 'Error', ['response' => 400]);
+    }
+    
+    if (get_option('siteurl') !== $url) {
+        update_option('siteurl', $url);
+    }
 }
 
-if ( isset( $_GET['wp_lang'] ) ) {
-	setcookie( 'wp_lang', sanitize_text_field( $_GET['wp_lang'] ), 0, COOKIEPATH, COOKIE_DOMAIN, $secure );
+// Enhanced cookie security
+$login_url = wp_login_url();
+if ($login_url === false) {
+    error_log("CosmicWord Login: Unable to determine login URL");
+    wp_die('Configuration error', 'Error', ['response' => 500]);
 }
 
+$secure = (parse_url($login_url, PHP_URL_SCHEME) === 'https');
+
+// Modern cookie handling (PHP 7.3+)
+if (PHP_VERSION_ID >= 70300) {
+    $cookie_options = [
+        'expires' => 0,
+        'path' => COOKIEPATH,
+        'domain' => COOKIE_DOMAIN,
+        'secure' => $secure,
+        'httponly' => true,
+        'samesite' => 'Lax'
+    ];
+
+    setcookie(TEST_COOKIE, 'WP Cookie check', $cookie_options);
+    
+    if (SITECOOKIEPATH !== COOKIEPATH) {
+        $cookie_options['path'] = SITECOOKIEPATH;
+        setcookie(TEST_COOKIE, 'WP Cookie check', $cookie_options);
+    }
+    
+    // Enhanced language cookie handling with attack detection
+    if (isset($_GET['wp_lang'])) {
+        $wp_lang = sanitize_text_field($_GET['wp_lang']);
+        if (preg_match('/^[a-z]{2,3}(?:_[A-Z]{2})?(?:_[a-zA-Z]+)?$/', $wp_lang)) {
+            $cookie_options['path'] = COOKIEPATH;
+            setcookie('wp_lang', $wp_lang, $cookie_options);
+        } else {
+            // Get client information
+            $ip = isset($_SERVER['REMOTE_ADDR']) ? sanitize_text_field($_SERVER['REMOTE_ADDR']) : 'unknown';
+            $forwarded_for = isset($_SERVER['HTTP_X_FORWARDED_FOR']) ? 
+                sanitize_text_field($_SERVER['HTTP_X_FORWARDED_FOR']) : '';
+            $user_agent = isset($_SERVER['HTTP_USER_AGENT']) ? 
+                sanitize_text_field($_SERVER['HTTP_USER_AGENT']) : 'unknown';
+
+            // Use transients for tracking
+            $track_key = 'wp_lang_track_' . md5($ip);
+            $tracking = get_transient($track_key);
+            
+            if (false === $tracking) {
+                $tracking = [
+                    'attempts' => 1,
+                    'first_attempt' => time(),
+                    'previous_rates' => [],
+                    'rate_adjustments' => 0
+                ];
+            } else {
+                if ((time() - $tracking['first_attempt']) > LANG_TIME_WINDOW) {
+                    $tracking = [
+                        'attempts' => 1,
+                        'first_attempt' => time(),
+                        'previous_rates' => [],
+                        'rate_adjustments' => 0
+                    ];
+                } else {
+                    $tracking['attempts']++;
+                }
+            }
+
+            $time_diff = time() - $tracking['first_attempt'];
+            $attempts = $tracking['attempts'];
+            $rate = $time_diff > 0 ? ($attempts / $time_diff) : $attempts;
+
+            if (is_numeric($rate) && $rate >= 0) {
+                $tracking['previous_rates'][] = (float)$rate;
+                if (count($tracking['previous_rates']) > 5) {
+                    array_shift($tracking['previous_rates']);
+                }
+                
+                if (count($tracking['previous_rates']) >= 2) {
+                    $current_rate = end($tracking['previous_rates']);
+                    $previous_rate = prev($tracking['previous_rates']);
+                    
+                    if ($previous_rate >= LANG_EXTREME_RATE && 
+                        $current_rate >= LANG_GAMING_RATE && 
+                        $current_rate < LANG_EXTREME_RATE) {
+                        $tracking['rate_adjustments']++;
+                    }
+                }
+            }
+
+            set_transient($track_key, $tracking, LANG_TIME_WINDOW);
+
+            // Log all invalid attempts for monitoring
+            if ($attempts >= LANG_LOG_ATTEMPTS || $rate >= LANG_EXTREME_RATE) {
+                $severity = ($rate >= LANG_EXTREME_RATE) ? "Potential automated" : "Multiple";
+                error_log(sprintf(
+                    "CosmicWord Login: %s language code attempts - IP: %s, Forwarded-For: %s, User-Agent: %s, Attempts: %d, Time Window: %ds, Rate: %.2f/s",
+                    $severity,
+                    $ip,
+                    $forwarded_for,
+                    $user_agent,
+                    $attempts,
+                    $time_diff,
+                    $rate
+                ));
+            }
+
+            // Log suspicious pattern adjustments
+            if ($tracking['rate_adjustments'] >= LANG_ADAPTIVE_ATTEMPTS) {
+                error_log(sprintf(
+                    "WordPress Login: Rate limit gaming detected - IP: %s, Adjustments: %d, Current Rate: %.2f/s",
+                    $ip,
+                    $tracking['rate_adjustments'],
+                    $rate
+                ));
+            }
+        }
+    }
+} else {
+    // Legacy cookie handling with security attributes
+    $cookie_suffix = '; SameSite=Lax; HttpOnly' . ($secure ? '; Secure' : '');
+    
+    setcookie(TEST_COOKIE, 'WP Cookie check', 0, COOKIEPATH . $cookie_suffix, COOKIE_DOMAIN, $secure, true);
+    
+    if (SITECOOKIEPATH !== COOKIEPATH) {
+        setcookie(TEST_COOKIE, 'WP Cookie check', 0, SITECOOKIEPATH . $cookie_suffix, COOKIE_DOMAIN, $secure, true);
+    }
+    
+    // Enhanced language cookie handling with attack detection for legacy PHP
+    if (isset($_GET['wp_lang'])) {
+        $wp_lang = sanitize_text_field($_GET['wp_lang']);
+        if (preg_match('/^[a-z]{2,3}(?:_[A-Z]{2})?(?:_[a-zA-Z]+)?$/', $wp_lang)) {
+            setcookie('wp_lang', $wp_lang, 0, COOKIEPATH . $cookie_suffix, COOKIE_DOMAIN, $secure, true);
+        } else {
+            // Get client information
+            $ip = isset($_SERVER['REMOTE_ADDR']) ? sanitize_text_field($_SERVER['REMOTE_ADDR']) : 'unknown';
+            $forwarded_for = isset($_SERVER['HTTP_X_FORWARDED_FOR']) ? 
+                sanitize_text_field($_SERVER['HTTP_X_FORWARDED_FOR']) : '';
+            $user_agent = isset($_SERVER['HTTP_USER_AGENT']) ? 
+                sanitize_text_field($_SERVER['HTTP_USER_AGENT']) : 'unknown';
+
+            // Use transients for tracking
+            $track_key = 'wp_lang_track_' . md5($ip);
+            $tracking = get_transient($track_key);
+            
+            if (false === $tracking) {
+                $tracking = [
+                    'attempts' => 1,
+                    'first_attempt' => time(),
+                    'previous_rates' => [],
+                    'rate_adjustments' => 0
+                ];
+            } else {
+                if ((time() - $tracking['first_attempt']) > LANG_TIME_WINDOW) {
+                    $tracking = [
+                        'attempts' => 1,
+                        'first_attempt' => time(),
+                        'previous_rates' => [],
+                        'rate_adjustments' => 0
+                    ];
+                } else {
+                    $tracking['attempts']++;
+                }
+            }
+
+            $time_diff = time() - $tracking['first_attempt'];
+            $attempts = $tracking['attempts'];
+            $rate = $time_diff > 0 ? ($attempts / $time_diff) : $attempts;
+
+            if (is_numeric($rate) && $rate >= 0) {
+                $tracking['previous_rates'][] = (float)$rate;
+                if (count($tracking['previous_rates']) > 5) {
+                    array_shift($tracking['previous_rates']);
+                }
+                
+                if (count($tracking['previous_rates']) >= 2) {
+                    $current_rate = end($tracking['previous_rates']);
+                    $previous_rate = prev($tracking['previous_rates']);
+                    
+                    if ($previous_rate >= LANG_EXTREME_RATE && 
+                        $current_rate >= LANG_GAMING_RATE && 
+                        $current_rate < LANG_EXTREME_RATE) {
+                        $tracking['rate_adjustments']++;
+                    }
+                }
+            }
+
+            set_transient($track_key, $tracking, LANG_TIME_WINDOW);
+
+            // Log all invalid attempts for monitoring
+            if ($attempts >= LANG_LOG_ATTEMPTS || $rate >= LANG_EXTREME_RATE) {
+                $severity = ($rate >= LANG_EXTREME_RATE) ? "Potential automated" : "Multiple";
+                error_log(sprintf(
+                    "WordPress Login: %s language code attempts - IP: %s, Forwarded-For: %s, User-Agent: %s, Attempts: %d, Time Window: %ds, Rate: %.2f/s",
+                    $severity,
+                    $ip,
+                    $forwarded_for,
+                    $user_agent,
+                    $attempts,
+                    $time_diff,
+                    $rate
+                ));
+            }
+
+            // Log suspicious pattern adjustments
+            if ($tracking['rate_adjustments'] >= LANG_ADAPTIVE_ATTEMPTS) {
+                error_log(sprintf(
+                    "CosmicWord Login: Rate limit gaming detected - IP: %s, Adjustments: %d, Current Rate: %.2f/s",
+                    $ip,
+                    $tracking['rate_adjustments'],
+                    $rate
+                ));
+            }
+        }
+    }
+}
 /**
  * Fires when the login form is initialized.
  *

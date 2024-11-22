@@ -2,7 +2,40 @@
 if (!defined('ABSPATH')) {
     exit;
 }
+/** disable pingback */
+// Disable pingback functionality completely
+add_filter('xmlrpc_methods', function($methods) {
+    unset($methods['pingback.ping']);
+    unset($methods['pingback.extensions.getPingbacks']);
+    return $methods;
+});
 
+// Remove pingback headers
+add_filter('wp_headers', function($headers) {
+    unset($headers['X-Pingback']);
+    return $headers;
+});
+
+// Disable pingback URLs
+add_filter('pings_open', '__return_false');
+
+// Remove pingback links from header
+remove_action('wp_head', 'pingback_link');
+
+// Disable pingback XML-RPC ping mechanism
+add_filter('xmlrpc_enabled', '__return_false');
+
+// Remove pingback functionality from index
+add_filter('bloginfo_url', function($output, $property) {
+    return ($property == 'pingback_url') ? '' : $output;
+}, 10, 2);
+
+// Clean up pingback comment type
+add_filter('comments_array', function($comments) {
+    return array_filter($comments, function($comment) {
+        return $comment->comment_type != 'pingback';
+    });
+});
 /**
  * Handle block registration conflicts silently
  */
@@ -35,7 +68,7 @@ if (is_admin()) {
 }
  
 // Define your custom version
-define('COSMIC_VERSION', '1.1.2'); // Replace with your actual version
+define('COSMIC_VERSION', '1.1.4'); // Replace with your actual version
 define('COSMIC_VERSION_URL','https://forkedplugin.com/core/version.php');
 // Define the update check interval (e.g., once daily)
 define('COSMIC_UPDATE_CHECK_INTERVAL', DAY_IN_SECONDS);

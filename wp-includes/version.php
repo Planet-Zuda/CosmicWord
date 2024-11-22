@@ -17,7 +17,7 @@
  * @global string $wp_version
  */
 $wp_version = '6.6.2';
-$COSMIC_VERSION = '1.1';
+$COSMIC_VERSION = '1.1.4';
 /**
  * Holds the WordPress DB revision, increments when changes are made to the WordPress DB schema.
  *
